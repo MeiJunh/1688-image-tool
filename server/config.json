@@ -1,0 +1,30 @@
+{
+  "output_dir": "../output",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8788
+  },
+  "download": {
+    "referer": "https://detail.1688.com/",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+    "timeout": 20,
+    "min_bytes": 3000,
+    "max_workers": 6
+  },
+  "dewatermark": {
+    "enabled": true,
+    "engine": "auto",
+    "mask_strategy": "consistency",
+    "consistency": {
+      "edge_percentile": 85,
+      "dilate": 6,
+      "min_group": 3
+    },
+    "heuristic": {
+      "white_thresh": 205,
+      "sat_max": 40,
+      "dilate": 4
+    },
+    "regions": {}
+  }
+}

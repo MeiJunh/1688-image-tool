@@ -1,0 +1,9 @@
+# 本地服务依赖（Windows / Mac 通用）
+requests>=2.28
+numpy>=1.24
+opencv-python>=4.7
+
+# 可选：更高质量的 AI 去水印引擎（基于 LaMa 深度模型）
+# 装了它，config.json 的 engine=auto 会自动优先使用；不装则用 opencv 引擎。
+# 安装： pip install iopaint
+# iopaint>=1.3
