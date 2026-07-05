@@ -150,6 +150,12 @@ def _empty_mask(path):
     return np.zeros((h, w), dtype=np.uint8)
 
 
+def _heuristic_or_empty(path, params):
+    """启发式蒙版；拿不到就返回全黑蒙版。不能用 `a or b`（数组真值判断会报错）。"""
+    m = heuristic_mask(path, params)
+    return m if m is not None else _empty_mask(path)
+
+
 def build_masks(image_paths, dw_cfg, host_key=None):
     """根据配置为所有图生成蒙版。返回 {path: mask}。"""
     strategy = dw_cfg.get("mask_strategy", "consistency")
@@ -168,11 +174,11 @@ def build_masks(image_paths, dw_cfg, host_key=None):
         # 对一致性无法覆盖(组太小)的图，用启发式兜底
         for p in image_paths:
             if masks.get(p) is None:
-                masks[p] = heuristic_mask(p, dw_cfg.get("heuristic", {})) or _empty_mask(p)
+                masks[p] = _heuristic_or_empty(p, dw_cfg.get("heuristic", {}))
         return masks
 
     if strategy == "heuristic":
-        return {p: (heuristic_mask(p, dw_cfg.get("heuristic", {})) or _empty_mask(p))
+        return {p: _heuristic_or_empty(p, dw_cfg.get("heuristic", {}))
                 for p in image_paths}
 
     # none / 未知
