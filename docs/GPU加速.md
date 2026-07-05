@@ -4,7 +4,31 @@ iopaint 用 NVIDIA 显卡跑 LaMa，比 CPU 快很多（一张从约 25 秒降�
 代码已支持自动选设备（`config.json` 的 `"device": "auto"` 会优先用显卡），
 但 Windows 上 `pip install iopaint` 默认装的是 **CPU 版 torch**，必须换成 **CUDA 版** 才能真正用上显卡。
 
-> 仅支持 **NVIDIA 显卡**。AMD / Intel 核显用不了 CUDA，维持 CPU 即可。
+> ⚠️ **只有 NVIDIA 显卡能加速。** 下面的 CUDA 步骤仅适用于 N 卡。
+
+## 显卡兼容性（先看这里）
+
+| 显卡 | Windows 上能否加速 iopaint | 怎么办 |
+|---|---|---|
+| **NVIDIA(N卡)** | ✅ 能，用 CUDA | 按下面步骤换 CUDA 版 torch |
+| **AMD(A卡，如 RX 6600XT)** | ❌ 不能 | 只能用 CPU（见下） |
+| **Intel 核显** | ❌ 不能 | 只能用 CPU |
+
+**为什么 A 卡不行**：PyTorch 的 GPU 加速要么靠 CUDA（仅 N 卡），要么靠 ROCm（AMD 方案，但**只在 Linux 上支持，Windows 没有**）。
+DirectML 虽能让 A 卡跑 PyTorch，但 iopaint 未适配，接不通。所以 **AMD / Intel 在 Windows 上只能 CPU 跑 iopaint**。
+
+### AMD / Intel / 无独显 用户怎么办
+
+`config.json` 的 `"device"` 保持 `"auto"` 即可（会自动落到 CPU），**不要**去装 CUDA 版 torch（装了也用不上）。加速思路改为「少跑 iopaint」：
+
+- **只有检测到水印的图才会走 iopaint**，没水印的直接跳过 —— 所以一批里真正慢的只有那几张。
+- iopaint 对**小水印**（角标、URL）其实不慢（它只处理水印周围一小块）；慢的是**大面积水印**（如整条居中大字）。
+- 追求速度：把 `engine` 设成 `"opencv"`（秒级，质量稍差）；追求质量：设 `"iopaint"`（CPU 慢但干净）。可按商品重要性切换。
+- 详情长图很多时，`consistency.analysis_max_side` 已把分析降采样，检测不会慢；慢只慢在 iopaint 修复本身。
+
+---
+
+## 以下步骤仅 NVIDIA 显卡适用
 
 ## 步骤
 
