@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         1688 商品图一键下载+去水印
 // @namespace    https://local.1688.tool/
-// @version      1.1.0
-// @description  在 1688 商品详情页一键抓取全部商品图(主图/SKU/详情图)，发送到本地服务下载并自动去水印
+// @version      1.2.0
+// @description  在 1688 商品详情页一键抓取全部商品图(主图/SKU/详情图)，发送到本地服务下载并自动去水印(后台异步处理+进度轮询)
 // @author       you
 // @match        *://*.1688.com/*
 // @grant        GM_xmlhttpRequest
@@ -94,36 +94,77 @@
     return t.replace(/\s+/g, " ").trim().slice(0, 60);
   }
 
-  // ---------- 核心：抓图并发送 ----------
-  async function run(setStatus) {
-    setStatus("⏳ 正在加载全部图片…", "#666");
-    await autoScroll();
-    const urls = collectAll();
-    if (!urls.length) {
-      setStatus("未找到图片，换个商品页?", "#c00");
-      return;
-    }
-    setStatus(`⏳ 发送 ${urls.length} 张，处理中…`, "#666");
-    GM_xmlhttpRequest({
-      method: "POST",
-      url: SERVER,
-      headers: { "Content-Type": "application/json" },
-      data: JSON.stringify({ name: productName(), urls, source_url: location.href }),
-      timeout: 300000,
-      onload: (resp) => {
-        try {
-          const r = JSON.parse(resp.responseText);
-          if (r.ok) {
-            setStatus(`✅ 完成 ${r.downloaded}/${r.total}`, "#0a0");
-            console.log("[1688-tool] 输出目录:", r.out_dir, r);
-            setTimeout(() => setStatus("⬇ 下载+去水印", "#ff6a00"), 4000);
+  // ---------- 轮询后台任务进度 ----------
+  function pollStatus(tid, setStatus, done) {
+    const base = SERVER.replace(/\/process$/, "");
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      if (tries > 2400) { clearInterval(timer); done && done(); return; } // ~2小时上限
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: base + "/status?id=" + tid,
+        timeout: 15000,
+        onload: (resp) => {
+          let s;
+          try { s = JSON.parse(resp.responseText); } catch (e) { return; }
+          if (s.done) {
+            clearInterval(timer);
+            if (s.ok) {
+              setStatus(`✅ 完成 ${s.downloaded}/${s.total}`, "#0a0");
+              console.log("[1688-tool] 输出目录:", s.out_dir, s);
+              setTimeout(() => setStatus("⬇ 下载+去水印", "#ff6a00"), 6000);
+            } else {
+              setStatus("❌ " + (s.error || "失败"), "#c00");
+            }
+            done && done();
           } else {
-            setStatus("❌ " + (r.error || "失败"), "#c00");
+            const stage = s.stage || "处理中";
+            const extra = stage === "去水印中" ? " (CPU较慢,请耐心)" : "";
+            setStatus(`⏳ ${stage} ${s.downloaded || 0}/${s.total || 0}${extra}`, "#666");
           }
-        } catch (e) { setStatus("❌ 服务返回异常", "#c00"); }
-      },
-      onerror: () => setStatus("❌ 连不上本地服务(先启动 server.py)", "#c00"),
-      ontimeout: () => setStatus("❌ 处理超时", "#c00"),
+        },
+        onerror: () => { /* 偶尔连不上，继续轮询即可 */ },
+      });
+    }, 3000);
+  }
+
+  // ---------- 核心：抓图并发送（后台异步处理 + 轮询进度）----------
+  function run(setStatus) {
+    return new Promise((resolve) => {
+      setStatus("⏳ 正在加载全部图片…", "#666");
+      autoScroll().then(() => {
+        const urls = collectAll();
+        if (!urls.length) {
+          setStatus("未找到图片，换个商品页?", "#c00");
+          return resolve();
+        }
+        setStatus(`⏳ 发送 ${urls.length} 张…`, "#666");
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: SERVER,
+          headers: { "Content-Type": "application/json" },
+          data: JSON.stringify({ name: productName(), urls, source_url: location.href }),
+          timeout: 30000,
+          onload: (resp) => {
+            let r;
+            try { r = JSON.parse(resp.responseText); }
+            catch (e) { setStatus("❌ 服务返回异常", "#c00"); return resolve(); }
+            if (r.ok && r.task_id) {
+              setStatus("⏳ 已开始后台处理…", "#666");
+              pollStatus(r.task_id, setStatus, resolve);
+            } else if (r.ok) {  // 兼容旧版同步返回
+              setStatus(`✅ 完成 ${r.downloaded}/${r.total}`, "#0a0");
+              resolve();
+            } else {
+              setStatus("❌ " + (r.error || "失败"), "#c00");
+              resolve();
+            }
+          },
+          onerror: () => { setStatus("❌ 连不上本地服务(先启动 server.py)", "#c00"); resolve(); },
+          ontimeout: () => { setStatus("❌ 发送超时", "#c00"); resolve(); },
+        });
+      });
     });
   }
 

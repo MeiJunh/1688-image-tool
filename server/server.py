@@ -2,20 +2,28 @@
 
 启动：  python server.py
 接口：  POST /process   { "name": "商品名", "urls": ["...", ...], "source_url": "..." }
+              -> 立即返回 { ok, task_id }，处理在后台进行（避免浏览器长时间等待/断连）
+        GET  /status?id=<task_id>   查询任务进度
         GET  /health
 """
 import os
 import re
 import json
 import time
+import uuid
+import threading
 import traceback
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlparse as _up, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import downloader
 import dewatermark
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# 后台任务表：task_id -> 进度/结果字典
+TASKS = {}
+TASKS_LOCK = threading.Lock()
 
 
 def load_config():
@@ -36,7 +44,7 @@ def host_key_of(url):
         return None
 
 
-def process(payload, cfg):
+def process(payload, cfg, task=None):
     urls = [u for u in payload.get("urls", []) if isinstance(u, str) and u.startswith("http")]
     urls = list(dict.fromkeys(urls))  # 去重且保序
     if not urls:
@@ -48,16 +56,22 @@ def process(payload, cfg):
     original_dir = os.path.join(base, "original")
     clean_dir = os.path.join(base, "clean")
 
+    if task is not None:
+        _update(task, stage="下载中", total=len(urls), out_dir=base)
     print(f"    [下载] 开始下载 {len(urls)} 张 ...", flush=True)
     dl = downloader.download_all(urls, original_dir, cfg["download"])
     saved = dl["saved"]
     print(f"    [下载] 完成 {len(saved)}/{len(urls)}，失败 {len(dl['errors'])}", flush=True)
+    if task is not None:
+        _update(task, downloaded=len(saved), failed=len(dl["errors"]))
     if not saved:
         return {"ok": False, "error": "全部图片下载失败", "detail": dl["errors"], "out_dir": base}
 
     dw = cfg.get("dewatermark", {})
     mask_info = ""
     if dw.get("enabled", True):
+        if task is not None:
+            _update(task, stage="去水印中")
         host = host_key_of(payload.get("source_url", ""))
         ok, info, _ = dewatermark.run(saved, original_dir, clean_dir, dw, host_key=host)
         mask_info = info
@@ -77,6 +91,27 @@ def process(payload, cfg):
         "clean_dir": clean_dir,
         "dewatermark": mask_info,
     }
+
+
+def _update(task, **kw):
+    """线程安全地更新任务进度。"""
+    with TASKS_LOCK:
+        task.update(kw)
+
+
+def _run_task(tid, payload, cfg):
+    """后台线程：执行 process 并把结果写回任务表。"""
+    task = TASKS[tid]
+    try:
+        result = process(payload, cfg, task=task)
+        result["done"] = True
+        result["stage"] = "完成" if result.get("ok") else "失败"
+        _update(task, **result)
+        print(f"    -> 任务 {tid} 完成：下载 {result.get('downloaded')}/{result.get('total')}，"
+              f"{result.get('dewatermark')}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        _update(task, ok=False, done=True, stage="失败", error=str(e))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,6 +134,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/health"):
             self._send(200, {"ok": True, "service": "1688-tool", "time": time.time()})
+        elif self.path.startswith("/status"):
+            qs = parse_qs(_up(self.path).query)
+            tid = (qs.get("id") or [""])[0]
+            with TASKS_LOCK:
+                task = dict(TASKS.get(tid, {})) if tid else {}
+            if not task:
+                self._send(404, {"ok": False, "error": "任务不存在或已过期", "task_id": tid})
+            else:
+                self._send(200, task)
         else:
             self._send(404, {"ok": False, "error": "not found"})
 
@@ -115,12 +159,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             names = payload.get("urls", [])
-            print(f"[{time.strftime('%H:%M:%S')}] 收到任务 '{payload.get('name')}' "
-                  f"共 {len(names)} 链接，开始处理...")
-            result = process(payload, self.cfg)
-            print(f"    -> 下载 {result.get('downloaded')}/{result.get('total')}，"
-                  f"{result.get('dewatermark')}")
-            self._send(200, result)
+            tid = uuid.uuid4().hex[:12]
+            with TASKS_LOCK:
+                TASKS[tid] = {"ok": None, "done": False, "stage": "排队中",
+                              "total": len(names), "downloaded": 0, "task_id": tid}
+            print(f"[{time.strftime('%H:%M:%S')}] 收到任务 {tid} '{payload.get('name')}' "
+                  f"共 {len(names)} 链接，后台处理中...")
+            # 立即返回，处理放到后台线程，避免浏览器长时间等待/断连
+            threading.Thread(target=_run_task, args=(tid, payload, self.cfg),
+                             daemon=True).start()
+            self._send(200, {"ok": True, "task_id": tid, "started": True,
+                             "message": "已开始后台处理"})
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             self._send(500, {"ok": False, "error": str(e)})

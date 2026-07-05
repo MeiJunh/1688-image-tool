@@ -120,10 +120,19 @@ def test_download_and_service():
     h = requests.get(f"http://127.0.0.1:{aport}/health", timeout=5).json()
     record("D1.服务健康检查", h.get("ok") is True, json.dumps(h, ensure_ascii=False))
 
-    # 全链路 POST
+    # 全链路 POST（异步：立即返回 task_id，再轮询 /status 直到完成）
     payload = {"name": "测试商品/带非法字符*", "urls": urls,
                "source_url": "https://detail.1688.com/offer/123.html"}
-    r = requests.post(f"http://127.0.0.1:{aport}/process", json=payload, timeout=120).json()
+    post = requests.post(f"http://127.0.0.1:{aport}/process", json=payload, timeout=10).json()
+    tid = post.get("task_id")
+    record("D3.任务立即受理(异步)", post.get("ok") and tid,
+           f"POST 立即返回 task_id={tid}")
+    r = {}
+    for _ in range(120):
+        r = requests.get(f"http://127.0.0.1:{aport}/status?id={tid}", timeout=5).json()
+        if r.get("done"):
+            break
+        time.sleep(0.5)
 
     passed = (r.get("ok") and r.get("downloaded") == len(urls))
     record("C.带Referer下载全部图", passed,
