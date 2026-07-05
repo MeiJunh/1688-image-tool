@@ -171,10 +171,13 @@ def build_masks(image_paths, dw_cfg, host_key=None):
 
     if strategy == "consistency":
         masks = consistency_masks(image_paths, dw_cfg.get("consistency", {}))
-        # 对一致性无法覆盖(组太小)的图，用启发式兜底
+        # 对一致性无法覆盖(组太小)的图的兜底策略：
+        # 默认 fallback_heuristic=False —— 用空蒙版(跳过)，因为启发式会把白底整片误判为水印。
+        use_heuristic = bool(dw_cfg.get("fallback_heuristic", False))
         for p in image_paths:
             if masks.get(p) is None:
-                masks[p] = _heuristic_or_empty(p, dw_cfg.get("heuristic", {}))
+                masks[p] = (_heuristic_or_empty(p, dw_cfg.get("heuristic", {}))
+                            if use_heuristic else _empty_mask(p))
         return masks
 
     if strategy == "heuristic":

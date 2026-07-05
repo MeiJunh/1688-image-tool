@@ -55,6 +55,8 @@ def download_all(urls, out_dir, cfg):
     os.makedirs(out_dir, exist_ok=True)
     saved, errors = [], []
     workers = max(1, int(cfg.get("max_workers", 4)))
+    total = len(urls)
+    done = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {
             ex.submit(download_one, url, out_dir, i, cfg): url
@@ -66,5 +68,8 @@ def download_all(urls, out_dir, cfg):
                 saved.append(path)
             else:
                 errors.append({"url": url, "error": err})
+            done += 1
+            if done % 10 == 0 or done == total:
+                print(f"    [下载] {done}/{total} ...", flush=True)
     saved.sort()  # 按序号命名，排序即恢复原顺序
     return {"saved": saved, "errors": errors}

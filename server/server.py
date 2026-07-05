@@ -48,8 +48,10 @@ def process(payload, cfg):
     original_dir = os.path.join(base, "original")
     clean_dir = os.path.join(base, "clean")
 
+    print(f"    [下载] 开始下载 {len(urls)} 张 ...", flush=True)
     dl = downloader.download_all(urls, original_dir, cfg["download"])
     saved = dl["saved"]
+    print(f"    [下载] 完成 {len(saved)}/{len(urls)}，失败 {len(dl['errors'])}", flush=True)
     if not saved:
         return {"ok": False, "error": "全部图片下载失败", "detail": dl["errors"], "out_dir": base}
 

@@ -70,7 +70,19 @@ def _inpaint_iopaint(image_paths, masks, in_dir, out_dir, device="cpu"):
 def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None):
     """对一批图去水印，写入 out_dir。返回 (ok, info, mask_dir)。"""
     os.makedirs(out_dir, exist_ok=True)
+    print(f"    [去水印] 生成蒙版中 ({len(image_paths)} 张)...", flush=True)
     masks = build_masks(image_paths, dw_cfg, host_key=host_key)
+
+    # 安全阀：蒙版占比过大(多为误检，如把白底整片当水印)则丢弃，
+    # 既避免 cv2.inpaint 修复超大区域时卡死数分钟，也避免擦花背景。
+    max_fill = float(dw_cfg.get("max_fill", 0.25))
+    capped = 0
+    for p, m in masks.items():
+        if m is not None and m.size and (m > 0).sum() / float(m.size) > max_fill:
+            masks[p] = np.zeros_like(m)
+            capped += 1
+    if capped:
+        print(f"    [去水印] {capped} 张蒙版占比过大，判为误检已跳过（防卡死）", flush=True)
 
     # 保存蒙版供人工检查/调参
     mask_dbg = os.path.join(out_dir, "_masks")
@@ -93,10 +105,13 @@ def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None):
 
     # opencv 路径
     n = 0
-    for p in image_paths:
+    total = len(image_paths)
+    for i, p in enumerate(image_paths, 1):
         out_path = os.path.join(out_dir, os.path.basename(p))
         if _inpaint_opencv(p, masks.get(p), out_path):
             n += 1
+        if i % 10 == 0 or i == total:
+            print(f"    [去水印] {i}/{total} ...", flush=True)
     note = f"引擎=opencv；处理 {n}/{len(image_paths)} 张"
     if engine == "iopaint":
         note += f"（iopaint 不可用/失败，已回退。原因：{info_iop[:200]}）"
