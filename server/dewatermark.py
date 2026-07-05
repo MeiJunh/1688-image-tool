@@ -20,6 +20,26 @@ def _iopaint_available():
     return shutil.which("iopaint") is not None
 
 
+def resolve_device(dw_cfg):
+    """解析去水印使用的计算设备。
+    device=auto 时自动探测：有 NVIDIA 显卡(cuda)优先，其次苹果 mps，否则 cpu。
+    也可在 config.json 里写死 "cuda" / "cpu" / "mps"。
+    """
+    dev = str(dw_cfg.get("device", "auto")).lower()
+    if dev != "auto":
+        return dev
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:  # noqa: BLE001
+        pass
+    return "cpu"
+
+
 def _inpaint_opencv(image_path, mask, out_path):
     img = imio.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
@@ -96,10 +116,12 @@ def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None):
         engine = "iopaint" if _iopaint_available() else "opencv"
 
     if engine == "iopaint" and _iopaint_available():
-        ok, info = _inpaint_iopaint(image_paths, masks, in_dir, out_dir,
-                                    device=dw_cfg.get("device", "cpu"))
+        device = resolve_device(dw_cfg)
+        print(f"    [去水印] 引擎=iopaint，设备={device}"
+              + ("（GPU 加速）" if device in ("cuda", "mps") else "（CPU，较慢）"), flush=True)
+        ok, info = _inpaint_iopaint(image_paths, masks, in_dir, out_dir, device=device)
         if ok:
-            return True, f"引擎=iopaint；{info}", mask_dbg
+            return True, f"引擎=iopaint(device={device})；{info}", mask_dbg
         # iopaint 失败则回退 opencv
         info_iop = info
 
