@@ -8,3 +8,8 @@ tests/compare.png
 .DS_Store
 .idea/
 .claude/
+
+# 临时/演示散落文件
+wecom-temp-*.jpg
+/demo_*.png
+/wm_demo.png
