@@ -12,6 +12,7 @@ import tempfile
 import cv2
 import numpy as np
 
+import imio
 from automask import build_masks
 
 
@@ -20,17 +21,17 @@ def _iopaint_available():
 
 
 def _inpaint_opencv(image_path, mask, out_path):
-    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    img = imio.imread(image_path, cv2.IMREAD_COLOR)
     if img is None:
         return False
     if mask is None or mask.max() == 0:
         # 没检测到水印，直接复制原图
-        cv2.imwrite(out_path, img)
+        imio.imwrite(out_path, img)
         return True
     if mask.shape[:2] != img.shape[:2]:
         mask = cv2.resize(mask, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
     res = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
-    cv2.imwrite(out_path, res)
+    imio.imwrite(out_path, res)
     return True
 
 
@@ -46,7 +47,7 @@ def _inpaint_iopaint(image_paths, masks, in_dir, out_dir, device="cpu"):
                 shutil.copy(p, os.path.join(out_dir, os.path.basename(p)))
                 continue
             mp = os.path.join(mask_dir, os.path.basename(p))
-            cv2.imwrite(mp, m)
+            imio.imwrite(mp, m)
             valid.append(p)
         if not valid:
             return True, "无需修复的图（未检测到水印）"
@@ -76,7 +77,7 @@ def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None):
     os.makedirs(mask_dbg, exist_ok=True)
     for p, m in masks.items():
         if m is not None:
-            cv2.imwrite(os.path.join(mask_dbg, os.path.basename(p) + ".png"), m)
+            imio.imwrite(os.path.join(mask_dbg, os.path.basename(p) + ".png"), m)
 
     engine = dw_cfg.get("engine", "auto")
     if engine == "auto":

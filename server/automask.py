@@ -14,6 +14,8 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
+import imio
+
 
 def _aspect_bucket(w, h):
     """按宽高比分组：主图(近方形)、竖长图、横图 会被分开处理。"""
@@ -22,7 +24,7 @@ def _aspect_bucket(w, h):
 
 
 def _load_gray(path, size):
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    img = imio.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         return None
     img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
@@ -41,7 +43,7 @@ def consistency_masks(image_paths, params):
     # 读取尺寸并按宽高比分组
     metas = []
     for p in image_paths:
-        img = cv2.imread(p, cv2.IMREAD_COLOR)
+        img = imio.imread(p, cv2.IMREAD_COLOR)
         if img is None:
             metas.append((p, None))
             continue
@@ -96,7 +98,7 @@ def consistency_masks(image_paths, params):
         raw = cv2.dilate(raw, k, iterations=1)
         # 该组蒙版按各图自身尺寸缩放回去
         for p in paths:
-            img = cv2.imread(p, cv2.IMREAD_COLOR)
+            img = imio.imread(p, cv2.IMREAD_COLOR)
             if img is None:
                 masks[p] = None
                 continue
@@ -107,7 +109,7 @@ def consistency_masks(image_paths, params):
 
 def heuristic_mask(path, params):
     """单图启发式：找半透明浅色/低饱和文字水印。兜底用。"""
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    img = imio.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         return None
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -124,7 +126,7 @@ def heuristic_mask(path, params):
 
 def region_mask(path, rects):
     """固定矩形蒙版。rects 为 [[x0,y0,x1,y1], ...]，取值 0..1 的相对比例。"""
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    img = imio.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         return None
     h, w = img.shape[:2]
@@ -141,7 +143,7 @@ def region_mask(path, rects):
 
 
 def _empty_mask(path):
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    img = imio.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         return None
     h, w = img.shape[:2]
