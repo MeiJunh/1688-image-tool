@@ -18,7 +18,18 @@ _MODEL_CACHE = {}
 
 
 def _iopaint_available():
-    return importlib.util.find_spec("iopaint") is not None
+    # iopaint 的 LaMa 模型依赖 torch；torch 缺失时 iopaint 只剩 'cv2' 模型可用，
+    # 会报 "Unsupported model: lama"。所以这里要求 iopaint 和 torch 都在。
+    return (importlib.util.find_spec("iopaint") is not None
+            and importlib.util.find_spec("torch") is not None)
+
+
+def _iopaint_missing_reason():
+    if importlib.util.find_spec("iopaint") is None:
+        return "未安装 iopaint（请在虚拟环境里 pip install iopaint）"
+    if importlib.util.find_spec("torch") is None:
+        return "缺少 torch（iopaint 的 LaMa 模型依赖它）。请 pip install torch"
+    return "iopaint 不可用"
 
 
 def _get_iopaint_model(device):
@@ -155,10 +166,10 @@ def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None, progress=None):
 
     if engine in ("auto", "iopaint"):
         if not _iopaint_available():
-            # 不回退 cv2：原样保留并提示安装 iopaint
+            # 不回退 cv2：原样保留并提示原因（多为缺 torch）
             for p in need:
                 _copy_through(p, out_dir)
-            msg = "未安装 iopaint，已跳过去水印(按设置不使用 cv2)。请 pip install iopaint 后重试。"
+            msg = f"{_iopaint_missing_reason()}；已跳过去水印(按设置不使用 cv2)，图片原样保留。"
             print(f"    [去水印] {msg}", flush=True)
             return False, msg, mask_dbg
         device = resolve_device(dw_cfg)
