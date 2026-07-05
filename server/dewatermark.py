@@ -149,23 +149,34 @@ def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None, progress=None):
     if not need:
         return True, "未检测到任何水印，全部原样保留（可调低 edge_percentile 提高灵敏度）", mask_dbg
 
+    # 引擎：默认只用 iopaint(LaMa)，不再用 cv2 去水印，也不做 cv2 兜底（cv2 效果差、易糊）。
+    # 仅当显式把 engine 设为 "opencv" 时才用 cv2（不推荐，通常仅测试/无 iopaint 时用）。
     engine = dw_cfg.get("engine", "auto")
-    if engine == "auto":
-        engine = "iopaint" if _iopaint_available() else "opencv"
 
-    print(f"    [去水印] 第3步 开始修复 {len(need)} 张，引擎={engine}", flush=True)
-    if engine == "iopaint" and _iopaint_available():
+    if engine in ("auto", "iopaint"):
+        if not _iopaint_available():
+            # 不回退 cv2：原样保留并提示安装 iopaint
+            for p in need:
+                _copy_through(p, out_dir)
+            msg = "未安装 iopaint，已跳过去水印(按设置不使用 cv2)。请 pip install iopaint 后重试。"
+            print(f"    [去水印] {msg}", flush=True)
+            return False, msg, mask_dbg
         device = resolve_device(dw_cfg)
-        print(f"    [去水印] 设备={device}"
+        print(f"    [去水印] 第3步 开始修复 {len(need)} 张，引擎=iopaint，设备={device}"
               + ("（GPU 加速）" if device in ("cuda", "mps") else f"（CPU，约每张20-30秒，共约{len(need)}张）"),
               flush=True)
         try:
-            ok, info = _inpaint_iopaint(need, masks, out_dir, device, progress=progress)
+            _, info = _inpaint_iopaint(need, masks, out_dir, device, progress=progress)
             return True, f"引擎=iopaint(device={device})；{info}", mask_dbg
         except Exception as e:  # noqa: BLE001
-            print(f"    [去水印] iopaint 出错，回退 opencv：{e}", flush=True)
+            # 不回退 cv2：原样保留并报错
+            for p in need:
+                _copy_through(p, out_dir)
+            print(f"    [去水印] iopaint 出错，已原样保留(不使用 cv2)：{e}", flush=True)
+            return False, f"iopaint 出错(未使用 cv2)：{e}", mask_dbg
 
-    # opencv 路径（默认或 iopaint 回退）
+    # 显式 engine=="opencv"（不推荐）
+    print(f"    [去水印] 第3步 开始修复 {len(need)} 张，引擎=opencv(显式指定)", flush=True)
     total = len(need)
     for i, p in enumerate(need, 1):
         _inpaint_opencv(p, masks.get(p), os.path.join(out_dir, os.path.basename(p)))

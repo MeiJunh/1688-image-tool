@@ -135,6 +135,45 @@ def region_mask(path, rects):
     return mask
 
 
+def region_stroke_mask(path, rects, params):
+    """在固定区域内检测水印笔画（半透明浅色文字）→ 生成贴合笔画的细蒙版。
+
+    适合 1688 这种"固定位置的半透明文字水印"：只在水印可能出现的区域(中间/底部)里
+    找比周围亮的笔画像素，区域外一律不动；没水印的图那块找不到笔画 → 近乎空蒙版 → 自动跳过。
+    比"跨图一致性"可靠得多（不依赖多图、也不怕半透明弱边缘）。
+    """
+    img = imio.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    region = np.zeros((h, w), np.uint8)
+    for x0, y0, x1, y1 in rects:
+        cv2.rectangle(region, (int(x0 * w), int(y0 * h)),
+                      (int(x1 * w), int(y1 * h)), 255, -1)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    # 白帽变换(top-hat)：提取"比背景亮、且小于结构元"的结构=水印笔画。
+    # 关键优点：均匀白底/灰底 top-hat≈0 不会触发（比自适应阈值更少误报），
+    # 同时能抓到压在深色/浅色上的亮笔画。kernel 要略大于笔画宽度。
+    k = int(params.get("kernel", 21)) | 1
+    thresh = int(params.get("tophat_thresh", 12))
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    th = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, ker)
+    cand = ((th > thresh) * 255).astype(np.uint8)
+    # 可选：叠加"高亮低饱和"补捕极淡的白字。默认关闭——会把整片白/灰底误当水印。
+    if bool(params.get("use_white", False)):
+        v_min = int(params.get("v_min", 150))
+        s_max = int(params.get("s_max", 60))
+        white = ((hsv[:, :, 2] > v_min) & (hsv[:, :, 1] < s_max)).astype(np.uint8) * 255
+        cand = cv2.bitwise_or(cand, white)
+    mask = cv2.bitwise_and(cand, region)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    dilate = int(params.get("dilate", 5))
+    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate)))
+    return mask
+
+
 def _empty_mask(path):
     img = imio.imread(path, cv2.IMREAD_COLOR)
     if img is None:
@@ -154,9 +193,21 @@ def build_masks(image_paths, dw_cfg, host_key=None):
     strategy = dw_cfg.get("mask_strategy", "consistency")
     regions = dw_cfg.get("regions", {})
 
-    # region 优先：若为当前店铺/域名配了固定区域，直接用
+    def _rects_for_host():
+        r = regions.get(host_key) if host_key else None
+        return r or regions.get("default")
+
+    # region_stroke：固定区域内抓水印笔画（推荐用于半透明文字水印）
+    if strategy == "region_stroke":
+        rects = _rects_for_host()
+        if rects:
+            rp = dw_cfg.get("region_stroke", {})
+            return {p: region_stroke_mask(p, rects, rp) for p in image_paths}
+        print("    [去水印] region_stroke 未配置 regions，退回一致性检测", flush=True)
+
+    # region：固定矩形整块填充（用于不透明水印）
     rects = regions.get(host_key) if host_key else None
-    if strategy == "region" or rects:
+    if strategy == "region" or (rects and strategy != "consistency"):
         if not rects:
             rects = regions.get("default")
         if rects:

@@ -13,11 +13,19 @@
   },
   "dewatermark": {
     "enabled": true,
-    "engine": "auto",
+    "engine": "iopaint",
     "device": "auto",
-    "mask_strategy": "consistency",
-    "max_fill": 0.25,
+    "mask_strategy": "region_stroke",
+    "max_fill": 0.35,
     "fallback_heuristic": false,
+    "region_stroke": {
+      "kernel": 21,
+      "tophat_thresh": 12,
+      "dilate": 5,
+      "use_white": false,
+      "v_min": 150,
+      "s_max": 60
+    },
     "consistency": {
       "edge_percentile": 85,
       "dilate": 6,
@@ -29,6 +37,8 @@
       "sat_max": 40,
       "dilate": 4
     },
-    "regions": {}
+    "regions": {
+      "default": [[0.03, 0.45, 0.97, 0.59], [0.46, 0.92, 0.99, 1.0]]
+    }
   }
 }
