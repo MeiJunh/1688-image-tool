@@ -39,71 +39,64 @@ def consistency_masks(image_paths, params):
     min_group = int(params.get("min_group", 3))
     pct = float(params.get("edge_percentile", 96.5))
     dilate = int(params.get("dilate", 6))
+    max_side = int(params.get("analysis_max_side", 1000))  # 分析降采样上限，防大图卡死/爆内存
 
-    # 读取尺寸并按宽高比分组
-    metas = []
-    for p in image_paths:
+    # 每张图只解码一次：记录 原始尺寸 + 降采样后的灰度图（大图在此被缩小，随后释放原图）
+    entries = []  # (path, (w,h), gray_small)
+    total = len(image_paths)
+    for idx, p in enumerate(image_paths, 1):
         img = imio.imread(p, cv2.IMREAD_COLOR)
         if img is None:
-            metas.append((p, None))
-            continue
-        h, w = img.shape[:2]
-        metas.append((p, (w, h)))
+            entries.append((p, None, None))
+        else:
+            h, w = img.shape[:2]
+            scale = min(1.0, max_side / float(max(h, w)))
+            gw, gh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+            gray = cv2.cvtColor(cv2.resize(img, (gw, gh), interpolation=cv2.INTER_AREA),
+                                cv2.COLOR_BGR2GRAY)
+            entries.append((p, (w, h), gray))
+        del img  # 及时释放，峰值内存只占单张
+        if idx % 20 == 0 or idx == total:
+            print(f"    [去水印] 读图分析 {idx}/{total} ...", flush=True)
 
-    groups = defaultdict(list)
-    for p, wh in metas:
-        if wh is None:
-            continue
-        groups[_aspect_bucket(*wh)].append((p, wh))
+    groups = defaultdict(list)  # aspect_bucket -> [entry index]
+    for i, (p, wh, gray) in enumerate(entries):
+        if wh is not None:
+            groups[_aspect_bucket(*wh)].append(i)
 
     masks = {}
-    for _, members in groups.items():
-        paths = [m[0] for m in members]
-        if len(paths) < min_group:
-            for p in paths:
-                masks[p] = None  # 组太小，交给兜底策略
+    for _, idxs in groups.items():
+        if len(idxs) < min_group:
+            for i in idxs:
+                masks[entries[i][0]] = None  # 组太小，交给兜底策略
             continue
-        # 统一到该组的中位尺寸
-        ws = sorted(m[1][0] for m in members)
-        hs = sorted(m[1][1] for m in members)
-        size = (ws[len(ws) // 2], hs[len(hs) // 2])
+        # 统一到该组降采样灰度的中位尺寸（都是小图，计算快、内存小）
+        gws = sorted(entries[i][2].shape[1] for i in idxs)
+        ghs = sorted(entries[i][2].shape[0] for i in idxs)
+        asize = (gws[len(gws) // 2], ghs[len(ghs) // 2])
 
-        # 关键思路：对每张图取"强边缘"二值图，统计每个像素在多少张图里都是强边缘。
-        # 水印固定位置 → 几乎每张图都有强边缘（presence 高）；
-        # 商品内容边缘 → 各图位置不同 → presence 低。据此区分，避免误框内容。
-        presence = np.zeros((size[1], size[0]), dtype=np.float32)
+        # 对每张图取"强边缘"二值图，统计每个像素在多少张图里都是强边缘。
+        # 水印固定位置 → 几乎每张图都有强边缘；商品内容边缘 → 各图位置不同 → 少。
+        presence = np.zeros((asize[1], asize[0]), dtype=np.float32)
         n = 0
-        for p in paths:
-            g = _load_gray(p, size)
-            if g is None:
-                continue
+        for i in idxs:
+            g = cv2.resize(entries[i][2], asize, interpolation=cv2.INTER_AREA)
             gx = cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)
             gy = cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)
             mag = cv2.magnitude(gx, gy)
-            # 该图自身的强边缘阈值（分位），二值化
             t = np.percentile(mag, pct)
             presence += (mag >= t).astype(np.float32)
             n += 1
-        if n == 0:
-            for p in paths:
-                masks[p] = None
-            continue
-        presence /= n  # 0..1：该位置强边缘出现在多少比例的图里
-        # 出现在 ≥ (n-1)/n 或至少 80% 的图里，才判为水印
+        presence /= max(1, n)
         need = max(0.8, (n - 1.0) / n - 1e-6)
         raw = (presence >= need).astype(np.uint8) * 255
-        # 形态学：连通 + 膨胀，覆盖笔画间隙和边缘外沿
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate, dilate))
         raw = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, k)
         raw = cv2.dilate(raw, k, iterations=1)
-        # 该组蒙版按各图自身尺寸缩放回去
-        for p in paths:
-            img = imio.imread(p, cv2.IMREAD_COLOR)
-            if img is None:
-                masks[p] = None
-                continue
-            h, w = img.shape[:2]
-            masks[p] = cv2.resize(raw, (w, h), interpolation=cv2.INTER_NEAREST)
+        # 组内蒙版(小图)放大回各图自身原始尺寸
+        for i in idxs:
+            w, h = entries[i][1]
+            masks[entries[i][0]] = cv2.resize(raw, (w, h), interpolation=cv2.INTER_NEAREST)
     return masks
 
 

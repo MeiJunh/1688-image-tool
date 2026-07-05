@@ -20,7 +20,8 @@
     "consistency": {
       "edge_percentile": 85,
       "dilate": 6,
-      "min_group": 3
+      "min_group": 3,
+      "analysis_max_side": 1000
     },
     "heuristic": {
       "white_thresh": 205,
