@@ -110,6 +110,7 @@ def test_download_and_service():
     # 起 app 服务
     import server as appserver  # noqa: E402
     cfg = appserver.load_config()
+    cfg["dewatermark"]["engine"] = "opencv"  # 测试固定用 opencv，快且不依赖 iopaint 安装
     appserver.Handler.cfg = cfg
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), appserver.Handler)
     aport = httpd.server_address[1]

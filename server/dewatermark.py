@@ -5,9 +5,7 @@
 - opencv ：cv2.inpaint(Telea)，无需 torch，安装快、纯本地，作为默认/兜底。
 """
 import os
-import shutil
-import subprocess
-import tempfile
+import importlib.util
 
 import cv2
 import numpy as np
@@ -15,9 +13,23 @@ import numpy as np
 import imio
 from automask import build_masks
 
+# 只加载一次 iopaint 模型，跨请求复用（加载较慢）
+_MODEL_CACHE = {}
+
 
 def _iopaint_available():
-    return shutil.which("iopaint") is not None
+    return importlib.util.find_spec("iopaint") is not None
+
+
+def _get_iopaint_model(device):
+    key = ("lama", device)
+    if key not in _MODEL_CACHE:
+        import torch
+        from iopaint.model_manager import ModelManager
+        print(f"    [去水印] 首次加载 iopaint(lama) 模型到 {device}，请稍候...", flush=True)
+        _MODEL_CACHE[key] = ModelManager(name="lama", device=torch.device(device))
+        print("    [去水印] 模型加载完成", flush=True)
+    return _MODEL_CACHE[key]
 
 
 def resolve_device(dw_cfg):
@@ -55,46 +67,49 @@ def _inpaint_opencv(image_path, mask, out_path):
     return True
 
 
-def _inpaint_iopaint(image_paths, masks, in_dir, out_dir, device="cpu"):
-    """批量调用 iopaint CLI：需要 image 目录与同名 mask 目录。"""
-    mask_dir = tempfile.mkdtemp(prefix="mask_")
-    try:
-        valid = []
-        for p in image_paths:
-            m = masks.get(p)
-            if m is None or m.max() == 0:
-                # 无水印的图直接拷到输出，不进模型
-                shutil.copy(p, os.path.join(out_dir, os.path.basename(p)))
-                continue
-            mp = os.path.join(mask_dir, os.path.basename(p))
-            imio.imwrite(mp, m)
-            valid.append(p)
-        if not valid:
-            return True, "无需修复的图（未检测到水印）"
-        cmd = [
-            "iopaint", "run",
-            "--model", "lama",
-            "--device", device,
-            "--image", in_dir,
-            "--mask", mask_dir,
-            "--output", out_dir,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            return False, proc.stderr[-800:] or proc.stdout[-800:]
-        return True, "iopaint 完成"
-    finally:
-        shutil.rmtree(mask_dir, ignore_errors=True)
+def _copy_through(p, out_dir):
+    """无水印的图原样拷到输出。"""
+    img = imio.imread(p, cv2.IMREAD_COLOR)
+    if img is not None:
+        imio.imwrite(os.path.join(out_dir, os.path.basename(p)), img)
 
 
-def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None):
-    """对一批图去水印，写入 out_dir。返回 (ok, info, mask_dir)。"""
+def _inpaint_iopaint(need, masks, out_dir, device, progress=None):
+    """用 iopaint(LaMa) Python 接口逐张去水印，带进度。need 为已确认有水印的图列表。"""
+    from iopaint.schema import InpaintRequest
+    model = _get_iopaint_model(device)
+    req = InpaintRequest()
+    done = 0
+    total = len(need)
+    for i, p in enumerate(need, 1):
+        name = os.path.basename(p)
+        img = imio.imread(p, cv2.IMREAD_COLOR)
+        if img is None:
+            print(f"    [去水印] iopaint {i}/{total} 跳过(读图失败): {name}", flush=True)
+            continue
+        m = masks[p]
+        if m.shape[:2] != img.shape[:2]:
+            m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        res = model(rgb, m, req)  # 返回 BGR uint8
+        imio.imwrite(os.path.join(out_dir, name), res)
+        done += 1
+        print(f"    [去水印] iopaint {i}/{total} 完成: {name}", flush=True)
+        if progress:
+            progress(done, total)
+    return True, f"iopaint 逐张完成 {done}/{total}"
+
+
+def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None, progress=None):
+    """对一批图去水印，写入 out_dir。返回 (ok, info, mask_dir)。
+    progress(done, total)：去水印阶段的逐张进度回调（可选）。
+    """
     os.makedirs(out_dir, exist_ok=True)
-    print(f"    [去水印] 生成蒙版中 ({len(image_paths)} 张)...", flush=True)
+    print(f"    [去水印] 第1步 生成蒙版中 ({len(image_paths)} 张)...", flush=True)
     masks = build_masks(image_paths, dw_cfg, host_key=host_key)
 
     # 安全阀：蒙版占比过大(多为误检，如把白底整片当水印)则丢弃，
-    # 既避免 cv2.inpaint 修复超大区域时卡死数分钟，也避免擦花背景。
+    # 既避免修复超大区域时卡死，也避免擦花背景。
     max_fill = float(dw_cfg.get("max_fill", 0.25))
     capped = 0
     for p, m in masks.items():
@@ -111,30 +126,50 @@ def run(image_paths, in_dir, out_dir, dw_cfg, host_key=None):
         if m is not None:
             imio.imwrite(os.path.join(mask_dbg, os.path.basename(p) + ".png"), m)
 
+    # 分类：哪些检测到水印(需处理) / 哪些没有(直接拷贝)
+    need, nowm = [], []
+    for p in image_paths:
+        m = masks.get(p)
+        if m is not None and m.size and int((m > 0).sum()) > 0:
+            need.append(p)
+        else:
+            nowm.append(p)
+    print(f"    [去水印] 第2步 检测结果：需去水印 {len(need)} 张，未检测到水印(直接保留) {len(nowm)} 张",
+          flush=True)
+    for p in need:
+        wm_px = int((masks[p] > 0).sum())
+        print(f"        ✔ 需处理: {os.path.basename(p)} (水印像素 {wm_px})", flush=True)
+    if progress:
+        progress(0, len(need))
+
+    # 无水印的图先原样拷贝到 clean/
+    for p in nowm:
+        _copy_through(p, out_dir)
+
+    if not need:
+        return True, "未检测到任何水印，全部原样保留（可调低 edge_percentile 提高灵敏度）", mask_dbg
+
     engine = dw_cfg.get("engine", "auto")
     if engine == "auto":
         engine = "iopaint" if _iopaint_available() else "opencv"
 
+    print(f"    [去水印] 第3步 开始修复 {len(need)} 张，引擎={engine}", flush=True)
     if engine == "iopaint" and _iopaint_available():
         device = resolve_device(dw_cfg)
-        print(f"    [去水印] 引擎=iopaint，设备={device}"
-              + ("（GPU 加速）" if device in ("cuda", "mps") else "（CPU，较慢）"), flush=True)
-        ok, info = _inpaint_iopaint(image_paths, masks, in_dir, out_dir, device=device)
-        if ok:
+        print(f"    [去水印] 设备={device}"
+              + ("（GPU 加速）" if device in ("cuda", "mps") else f"（CPU，约每张20-30秒，共约{len(need)}张）"),
+              flush=True)
+        try:
+            ok, info = _inpaint_iopaint(need, masks, out_dir, device, progress=progress)
             return True, f"引擎=iopaint(device={device})；{info}", mask_dbg
-        # iopaint 失败则回退 opencv
-        info_iop = info
+        except Exception as e:  # noqa: BLE001
+            print(f"    [去水印] iopaint 出错，回退 opencv：{e}", flush=True)
 
-    # opencv 路径
-    n = 0
-    total = len(image_paths)
-    for i, p in enumerate(image_paths, 1):
-        out_path = os.path.join(out_dir, os.path.basename(p))
-        if _inpaint_opencv(p, masks.get(p), out_path):
-            n += 1
-        if i % 10 == 0 or i == total:
-            print(f"    [去水印] {i}/{total} ...", flush=True)
-    note = f"引擎=opencv；处理 {n}/{len(image_paths)} 张"
-    if engine == "iopaint":
-        note += f"（iopaint 不可用/失败，已回退。原因：{info_iop[:200]}）"
-    return True, note, mask_dbg
+    # opencv 路径（默认或 iopaint 回退）
+    total = len(need)
+    for i, p in enumerate(need, 1):
+        _inpaint_opencv(p, masks.get(p), os.path.join(out_dir, os.path.basename(p)))
+        print(f"    [去水印] opencv {i}/{total} 完成: {os.path.basename(p)}", flush=True)
+        if progress:
+            progress(i, total)
+    return True, f"引擎=opencv；处理 {total} 张", mask_dbg

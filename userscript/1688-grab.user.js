@@ -120,8 +120,14 @@
             done && done();
           } else {
             const stage = s.stage || "处理中";
-            const extra = stage === "去水印中" ? " (CPU较慢,请耐心)" : "";
-            setStatus(`⏳ ${stage} ${s.downloaded || 0}/${s.total || 0}${extra}`, "#666");
+            let txt;
+            if (stage === "去水印中") {
+              const d = s.wm_done || 0, t = s.wm_total || 0;
+              txt = t ? `⏳ 去水印 ${d}/${t} (CPU较慢,请耐心)` : "⏳ 去水印准备中…";
+            } else {
+              txt = `⏳ ${stage} ${s.downloaded || 0}/${s.total || 0}`;
+            }
+            setStatus(txt, "#666");
           }
         },
         onerror: () => { /* 偶尔连不上，继续轮询即可 */ },

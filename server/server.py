@@ -72,8 +72,14 @@ def process(payload, cfg, task=None):
     if dw.get("enabled", True):
         if task is not None:
             _update(task, stage="去水印中")
+
+        def _prog(done, total):
+            if task is not None:
+                _update(task, wm_done=done, wm_total=total)
+
         host = host_key_of(payload.get("source_url", ""))
-        ok, info, _ = dewatermark.run(saved, original_dir, clean_dir, dw, host_key=host)
+        ok, info, _ = dewatermark.run(saved, original_dir, clean_dir, dw,
+                                      host_key=host, progress=_prog)
         mask_info = info
     else:
         clean_dir = None
