@@ -36,8 +36,16 @@ def _get_iopaint_model(device):
     key = ("lama", device)
     if key not in _MODEL_CACHE:
         import torch
+        from iopaint.model import models
         from iopaint.model_manager import ModelManager
-        print(f"    [去水印] 首次加载 iopaint(lama) 模型到 {device}，请稍候...", flush=True)
+        # 关键：Python 接口的 ModelManager 只扫描"已下载"的模型，不会自动下载权重。
+        # 若 LaMa 权重没下过，available_models 里就没有 lama，会报
+        # "Unsupported model: lama. Available models: ['cv2']"。所以这里先确保下载。
+        if not models["lama"].is_downloaded():
+            print("    [去水印] 首次使用，正在下载 LaMa 模型(约200MB)，请联网稍候...", flush=True)
+            models["lama"].download()
+            print("    [去水印] LaMa 模型下载完成", flush=True)
+        print(f"    [去水印] 加载 iopaint(lama) 模型到 {device}...", flush=True)
         _MODEL_CACHE[key] = ModelManager(name="lama", device=torch.device(device))
         print("    [去水印] 模型加载完成", flush=True)
     return _MODEL_CACHE[key]
